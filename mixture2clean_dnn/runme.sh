@@ -41,6 +41,10 @@ python prepare_data.py pack_features --workspace=$WORKSPACE --data_type=test --s
 # Compute scaler. 
 python prepare_data.py compute_scaler --workspace=$WORKSPACE --data_type=train --snr=$TR_SNR
 
+# Pack scaler features.
+python prepare_data.py pack_scaler_features --workspace=$WORKSPACE --data_type=train --snr=$TR_SNR
+python prepare_data.py pack_scaler_features --workspace=$WORKSPACE --data_type=test --snr=$TE_SNR
+
 # Train. 
 LEARNING_RATE=1e-4
 CUDA_VISIBLE_DEVICES=3 python main_dnn.py train --workspace=$WORKSPACE --tr_snr=$TR_SNR --te_snr=$TE_SNR --lr=$LEARNING_RATE

@@ -371,6 +371,66 @@ def load_feature_from_files(names, feat_dir, args):
     return x_all, y_all
 
 
+def pack_scaler_features(args):
+    """Write scaler features to .h5 file.
+
+    Args:
+      workspace: str, path of workspace.
+      data_type: str, 'train' | 'test'.
+    """
+    workspace = args.workspace
+    data_type = args.data_type
+    snr = args.snr
+
+    t1 = time.time()
+
+    # unscaled data.
+    unscaler_hdf5_path = os.path.join(workspace, "packed_features", "spectrogram", data_type, "%ddb" % int(snr), "data.h5")
+    unscaler_hf = h5py.File(unscaler_hdf5_path, 'r')
+
+    unscaler_x_dataset, unscaler_y_dataset = unscaler_hf['x'], unscaler_hf['y']
+
+    # Write scaled data to .h5 file.
+    out_path = os.path.join(workspace, "packed_features", "spectrogram", data_type, "%ddb" % int(snr), "scaler.data.h5")
+    create_folder(os.path.dirname(out_path))
+
+    max_x_shape, max_y_shape = map(lambda n: (None,) + n.shape[1:], [unscaler_x_dataset, unscaler_y_dataset])
+    scaler_x_shape, scaler_y_shape = map(lambda n: (0,) + n.shape[1:], [unscaler_x_dataset, unscaler_y_dataset])
+
+    scaler_hf = h5py.File(out_path, 'w')
+    scaler_x_dataset = scaler_hf.create_dataset('x', scaler_x_shape,
+            maxshape=max_x_shape, dtype='float32')
+    scaler_y_dataset = scaler_hf.create_dataset('y', scaler_y_shape,
+            maxshape=max_y_shape, dtype='float32')
+
+    scaler_path = os.path.join(workspace, "packed_features", "spectrogram", "train", "%ddb" % int(snr), "scaler.p")
+    scaler = pickle.load(open(scaler_path, 'rb'))
+
+    # Write out data to .h5 file.
+    assert unscaler_x_dataset.shape[0] == unscaler_y_dataset.shape[0]
+    total_segs = unscaler_x_dataset.shape[0]
+    for i in range(0, total_segs, 1000):
+        x, y = unscaler_x_dataset[i:i+1000], unscaler_y_dataset[i:i+1000]
+
+        assert len(x) == len(y)
+        new_size = i + len(x)
+
+        scaler_x_dataset.resize((new_size,) + x.shape[1:])
+        scaler_y_dataset.resize((new_size,) + y.shape[1:])
+
+        scaler_x = scale_on_3d(x, scaler)
+        scaler_y = scale_on_2d(y, scaler)
+
+        scaler_x_dataset[i:new_size] = scaler_x
+        scaler_y_dataset[i:new_size] = scaler_y
+
+    unscaler_hf.close()
+    scaler_hf.close()
+
+    print("Write out to %s" % out_path)
+    print("Pack scaler features finished! %s s" % (time.time() - t1,))
+
+
 def log_sp(x):
     return np.log(x + 1e-08)
 
@@ -397,6 +457,59 @@ def pad_with_border(x, n_pad):
     x_pad_list = [x[0:1]] * n_pad + [x] + [x[-1:]] * n_pad
     return np.concatenate(x_pad_list, axis=0)
 
+
+class PoorScaler(object):
+    """The PoorScaler calculate mean and std of a large file part by part.
+    """
+    def __init__(self, with_mean=True, with_std=True):
+        self._with_mean = with_mean
+        self._with_std = with_std
+
+    def fit(self, dataset, axes=(0,)):
+        total_size = len(dataset)
+        mean = np.zeros(dataset.shape[len(axes):])
+        std = np.zeros(dataset.shape[len(axes):])
+
+        def reshape_x(x):
+            new_shape_0 = 1
+            for s in x.shape[:len(axes)]:
+                new_shape_0 *= s
+            new_shape = (new_shape_0,) + x.shape[len(axes):]
+            print(new_shape)
+            return x.reshape(new_shape)
+
+        for i in range(0, total_size, 1000):
+            x = dataset[i:i+1000]
+            print x.shape
+            new_x = reshape_x(x)
+            print new_x.shape
+            sum_x = np.sum(new_x, axis=0)
+            mean += sum_x / float(total_size)
+
+        for i in range(0, total_size, 1000):
+            x = dataset[i:i+1000]
+            new_x = reshape_x(x)
+            new_x = new_x - mean
+            sum_square_x = np.sum(np.square(new_x),  axis=0)
+            std += sum_square_x / float(total_size)
+
+        std = np.sqrt(std)
+
+        if self._with_mean:
+            self.mean_ = mean
+        if self._with_std:
+            self.scale_ = std
+
+        return self
+
+    def transform(self, x):
+        if self._with_mean:
+            x = x - self.mean_
+        if self._with_std:
+            x /= self.scale_
+        return x
+
+
 ###
 def compute_scaler(args):
     """Compute and write out scaler of data.
@@ -408,16 +521,16 @@ def compute_scaler(args):
     # Load data.
     t1 = time.time()
     hdf5_path = os.path.join(workspace, "packed_features", "spectrogram", data_type, "%ddb" % int(snr), "data.h5")
-    with h5py.File(hdf5_path, 'r') as hf:
-        x = hf.get('x')
-        x = np.array(x)     # (n_segs, n_concat, n_freq)
+
+    hf = h5py.File(hdf5_path, 'r')
+    x = hf.get('x')
 
     # Compute scaler.
-    (n_segs, n_concat, n_freq) = x.shape
-    x2d = x.reshape((n_segs * n_concat, n_freq))
-    scaler = preprocessing.StandardScaler(with_mean=True, with_std=True).fit(x2d)
+    scaler = PoorScaler(with_mean=True, with_std=True).fit(x, axes=(0,1))
     print(scaler.mean_)
     print(scaler.scale_)
+
+    hf.close()
 
     # Write out scaler.
     out_path = os.path.join(workspace, "packed_features", "spectrogram", data_type, "%ddb" % int(snr), "scaler.p")
@@ -491,6 +604,11 @@ if __name__ == '__main__':
     parser_compute_scaler.add_argument('--data_type', type=str, required=True)
     parser_compute_scaler.add_argument('--snr', type=float, required=True)
 
+    parser_pack_features = subparsers.add_parser('pack_scaler_features')
+    parser_pack_features.add_argument('--workspace', type=str, required=True)
+    parser_pack_features.add_argument('--data_type', type=str, required=True)
+    parser_pack_features.add_argument('--snr', type=float, required=True)
+
     args = parser.parse_args()
     if args.mode == 'create_mixture_csv':
         create_mixture_csv(args)
@@ -500,5 +618,7 @@ if __name__ == '__main__':
         pack_features(args)
     elif args.mode == 'compute_scaler':
         compute_scaler(args)
+    elif args.mode == 'pack_scaler_features':
+        pack_scaler_features(args)
     else:
         raise Exception("Error!")
