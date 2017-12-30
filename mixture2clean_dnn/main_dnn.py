@@ -14,8 +14,10 @@ import time
 import glob
 import matplotlib.pyplot as plt
 
-import prepare_data as pp_data
 import config as cfg
+import prepare_data as pp_data
+
+from prepare_data import PoorScaler
 from data_generator import DataGenerator
 from spectrogram_to_wave import recover_wav
 
@@ -65,37 +67,33 @@ def train(args):
     tr_snr = args.tr_snr
     te_snr = args.te_snr
     lr = args.lr
+    scale_data = args.scale_data
     
     # Load data. 
     t1 = time.time()
-    tr_hdf5_path = os.path.join(workspace, "packed_features", "spectrogram", "train", "%ddb" % int(tr_snr), "data.h5")
-    te_hdf5_path = os.path.join(workspace, "packed_features", "spectrogram", "test", "%ddb" % int(te_snr), "data.h5")
-    (tr_x, tr_y) = pp_data.load_hdf5(tr_hdf5_path)
-    (te_x, te_y) = pp_data.load_hdf5(te_hdf5_path)
+    if scale_data:
+        tr_hdf5_path = os.path.join(workspace, "packed_features", "spectrogram", "train", "%ddb" % int(tr_snr), "scaler.data.h5")
+        te_hdf5_path = os.path.join(workspace, "packed_features", "spectrogram", "test", "%ddb" % int(te_snr), "scaler.data.h5")
+    else:
+        tr_hdf5_path = os.path.join(workspace, "packed_features", "spectrogram", "train", "%ddb" % int(tr_snr), "data.h5")
+        te_hdf5_path = os.path.join(workspace, "packed_features", "spectrogram", "test", "%ddb" % int(te_snr), "data.h5")
+
+    tr_hdf5 = h5py.File(tr_hdf5_path, "r")
+    te_hdf5 = h5py.File(te_hdf5_path, "r")
+    tr_x, tr_y = tr_hdf5["x"], tr_hdf5["y"]
+    te_x, te_y = te_hdf5["x"], te_hdf5["y"]
     print(tr_x.shape, tr_y.shape)
     print(te_x.shape, te_y.shape)
-    print("Load data time: %s s" % (time.time() - t1,))
     
     batch_size = 500
     print("%d iterations / epoch" % int(tr_x.shape[0] / batch_size))
-    
-    # Scale data. 
-    if True:
-        t1 = time.time()
-        scaler_path = os.path.join(workspace, "packed_features", "spectrogram", "train", "%ddb" % int(tr_snr), "scaler.p")
-        scaler = pickle.load(open(scaler_path, 'rb'))
-        tr_x = pp_data.scale_on_3d(tr_x, scaler)
-        tr_y = pp_data.scale_on_2d(tr_y, scaler)
-        te_x = pp_data.scale_on_3d(te_x, scaler)
-        te_y = pp_data.scale_on_2d(te_y, scaler)
-        print("Scale data time: %s s" % (time.time() - t1,))
-        
+
     # Debug plot. 
     if False:
         plt.matshow(tr_x[0 : 1000, 0, :].T, origin='lower', aspect='auto', cmap='jet')
         plt.show()
         pause
-        
+
     # Build model
     (_, n_concat, n_freq) = tr_x.shape
     n_hid = 2048
@@ -146,7 +144,7 @@ def train(args):
         iter += 1
         
         # Validate and save training stats. 
-        if iter % 1000 == 0:
+        if iter % 100 == 0:
             tr_loss = eval(model, eval_tr_gen, tr_x, tr_y)
             te_loss = eval(model, eval_te_gen, te_x, te_y)
             print("Iteration: %d, tr_loss: %f, te_loss: %f" % (iter, tr_loss, te_loss))
@@ -159,14 +157,16 @@ def train(args):
             cPickle.dump(stat_dict, open(stat_path, 'wb'), protocol=cPickle.HIGHEST_PROTOCOL)
             
         # Save model. 
-        if iter % 5000 == 0:
+        if iter % 500 == 0:
             model_path = os.path.join(model_dir, "md_%diters.h5" % iter)
             model.save(model_path)
             print("Saved model to %s" % model_path)
         
-        if iter == 10001:
+        if iter == 1001:
             break
             
+    tr_hdf5.close()
+    te_hdf5.close()
     print("Training time: %s s" % (time.time() - t1,))
 
 def inference(args):
@@ -270,6 +270,7 @@ if __name__ == '__main__':
     parser_train.add_argument('--tr_snr', type=float, required=True)
     parser_train.add_argument('--te_snr', type=float, required=True)
     parser_train.add_argument('--lr', type=float, required=True)
+    parser_train.add_argument('--scale_data', type=bool, default=True)
     
     parser_inference = subparsers.add_parser('inference')
     parser_inference.add_argument('--workspace', type=str, required=True)

@@ -10,6 +10,7 @@ class DataGenerator(object):
     def generate(self, xs, ys):
         x = xs[0]
         y = ys[0]
+
         batch_size = self._batch_size_
         n_samples = len(x)
         
@@ -32,5 +33,9 @@ class DataGenerator(object):
                 np.random.shuffle(index)                
  
             batch_idx = index[pointer : min(pointer + batch_size, n_samples)]
+
+            # Dataset selection only support increasing order list
+            batch_idx = sorted(list(batch_idx))
+
             pointer += batch_size
             yield x[batch_idx], y[batch_idx]
